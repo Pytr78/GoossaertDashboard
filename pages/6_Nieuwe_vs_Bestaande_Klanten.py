@@ -35,7 +35,7 @@ with st.spinner("Alle historische orders ophalen..."):
         all_records = client.search_read(
             "sale.order",
             [["state", "in", ["sale", "done"]]],
-            ["partner_id", "commercial_partner_id", "date_order", "amount_untaxed"],
+            ["partner_id", "date_order", "amount_untaxed"],
             limit=10000,
         )
     except Exception as e:
@@ -47,9 +47,28 @@ if not all_records:
     st.stop()
 
 df_all = pd.DataFrame(all_records)
-# Gebruik commercial_partner_id (bovenliggend bedrijf) voor classificatie
-df_all["klant_id"] = df_all["commercial_partner_id"].apply(lambda x: x[0] if isinstance(x, list) else x)
-df_all["klant"] = df_all["commercial_partner_id"].apply(lambda x: x[1] if isinstance(x, list) else str(x))
+df_all["_partner_id"] = df_all["partner_id"].apply(lambda x: x[0] if isinstance(x, list) else x)
+
+# Zoek parent_id op voor alle unieke partners (bovenliggend bedrijf)
+partner_ids = df_all["_partner_id"].unique().tolist()
+with st.spinner("Bedrijfsstructuur ophalen..."):
+    partner_records = client.search_read(
+        "res.partner",
+        [["id", "in", partner_ids]],
+        ["id", "name", "parent_id"],
+        limit=len(partner_ids) + 1,
+    )
+
+# Mapping: partner_id → (bedrijf_id, bedrijfsnaam)
+partner_map = {}
+for p in partner_records:
+    if p["parent_id"]:
+        partner_map[p["id"]] = (p["parent_id"][0], p["parent_id"][1])
+    else:
+        partner_map[p["id"]] = (p["id"], p["name"])
+
+df_all["klant_id"] = df_all["_partner_id"].map(lambda x: partner_map.get(x, (x, str(x)))[0])
+df_all["klant"] = df_all["_partner_id"].map(lambda x: partner_map.get(x, (x, str(x)))[1])
 df_all["date_order"] = pd.to_datetime(df_all["date_order"])
 df_all["maand"] = df_all["date_order"].dt.to_period("M")
 
