@@ -35,7 +35,7 @@ with st.spinner("Alle historische orders ophalen..."):
         all_records = client.search_read(
             "sale.order",
             [["state", "in", ["sale", "done"]]],
-            ["partner_id", "date_order", "amount_untaxed"],
+            ["partner_id", "commercial_partner_id", "date_order", "amount_untaxed"],
             limit=10000,
         )
     except Exception as e:
@@ -47,8 +47,9 @@ if not all_records:
     st.stop()
 
 df_all = pd.DataFrame(all_records)
-df_all["klant_id"] = df_all["partner_id"].apply(lambda x: x[0] if isinstance(x, list) else x)
-df_all["klant"] = df_all["partner_id"].apply(lambda x: x[1] if isinstance(x, list) else str(x))
+# Gebruik commercial_partner_id (bovenliggend bedrijf) voor classificatie
+df_all["klant_id"] = df_all["commercial_partner_id"].apply(lambda x: x[0] if isinstance(x, list) else x)
+df_all["klant"] = df_all["commercial_partner_id"].apply(lambda x: x[1] if isinstance(x, list) else str(x))
 df_all["date_order"] = pd.to_datetime(df_all["date_order"])
 df_all["maand"] = df_all["date_order"].dt.to_period("M")
 
