@@ -1,4 +1,7 @@
 import streamlit as st
+from auth import require_password
+
+require_password()
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import date

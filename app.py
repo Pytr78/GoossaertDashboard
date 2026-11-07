@@ -1,5 +1,8 @@
 import streamlit as st
+from auth import require_password
 from odoo_client import OdooClient
+
+require_password()
 
 st.set_page_config(
     page_title="Goossaert Dashboard",
