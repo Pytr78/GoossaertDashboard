@@ -4,13 +4,14 @@ from auth import require_password
 require_password()
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import date
 from odoo_client import OdooClient
 
 st.set_page_config(page_title="Nieuwe vs Bestaande Klanten", page_icon="👥", layout="wide")
 st.title("👥 Nieuwe vs Bestaande Klanten")
-st.caption("Een klant is 'nieuw' als hun allereerste bestelling binnen de geselecteerde periode valt.")
+st.caption(
+    "Een klant is 'nieuw' in een maand als ze vóór die maand nog nooit een bestelling hadden geplaatst."
+)
 
 @st.cache_resource
 def get_client():
@@ -29,12 +30,14 @@ if start > end:
     st.error("Begindatum mag niet na einddatum liggen.")
     st.stop()
 
-fields = ["partner_id", "date_order", "amount_untaxed"]
-domain_confirmed = [["state", "in", ["sale", "done"]]]
-
 with st.spinner("Alle historische orders ophalen..."):
     try:
-        all_records = client.search_read("sale.order", domain_confirmed, fields, limit=10000)
+        all_records = client.search_read(
+            "sale.order",
+            [["state", "in", ["sale", "done"]]],
+            ["partner_id", "date_order", "amount_untaxed"],
+            limit=10000,
+        )
     except Exception as e:
         st.error(f"Fout bij ophalen data: {e}")
         st.stop()
@@ -47,10 +50,12 @@ df_all = pd.DataFrame(all_records)
 df_all["klant_id"] = df_all["partner_id"].apply(lambda x: x[0] if isinstance(x, list) else x)
 df_all["klant"] = df_all["partner_id"].apply(lambda x: x[1] if isinstance(x, list) else str(x))
 df_all["date_order"] = pd.to_datetime(df_all["date_order"])
+df_all["maand"] = df_all["date_order"].dt.to_period("M")
 
-# Eerste bestelling per klant (ooit)
-eerste_bestelling = df_all.groupby("klant_id")["date_order"].min().rename("eerste_order")
-df_all = df_all.join(eerste_bestelling, on="klant_id")
+# Eerste bestelling ooit per klant
+eerste = df_all.groupby("klant_id")["date_order"].min().rename("eerste_order")
+df_all = df_all.join(eerste, on="klant_id")
+df_all["eerste_maand"] = df_all["eerste_order"].dt.to_period("M")
 
 # Filter op geselecteerde periode
 start_dt = pd.Timestamp(start)
@@ -61,12 +66,12 @@ if df.empty:
     st.info("Geen bevestigde orders in deze periode.")
     st.stop()
 
-# Classificatie
-df["type"] = df["eerste_order"].apply(
-    lambda x: "Nieuwe klant" if start_dt <= x <= end_dt else "Bestaande klant"
+# Per maand: klant is nieuw als eerste_maand == huidige maand
+df["type"] = df.apply(
+    lambda r: "Nieuwe klant" if r["eerste_maand"] == r["maand"] else "Bestaande klant", axis=1
 )
 
-# --- KPIs ---
+# --- KPIs over volledige periode ---
 nieuw = df[df["type"] == "Nieuwe klant"]
 bestaand = df[df["type"] == "Bestaande klant"]
 totaal = df["amount_untaxed"].sum()
@@ -76,57 +81,80 @@ k1.metric("Omzet nieuwe klanten", f"€ {nieuw['amount_untaxed'].sum():,.0f}",
           f"{nieuw['amount_untaxed'].sum() / totaal * 100:.1f}%" if totaal else "0%")
 k2.metric("Omzet bestaande klanten", f"€ {bestaand['amount_untaxed'].sum():,.0f}",
           f"{bestaand['amount_untaxed'].sum() / totaal * 100:.1f}%" if totaal else "0%")
-k3.metric("Aantal nieuwe klanten", nieuw["klant_id"].nunique())
-k4.metric("Aantal bestaande klanten", bestaand["klant_id"].nunique())
+k3.metric("Nieuwe klanten (uniek)", nieuw["klant_id"].nunique())
+k4.metric("Bestaande klanten (uniek)", bestaand["klant_id"].nunique())
 
 st.divider()
 
-# --- Donut chart ---
-col1, col2 = st.columns(2)
+# --- Gestapeld staafdiagram: aantal nieuwe klanten per maand ---
+st.subheader("Nieuwe klanten per maand")
 
-with col1:
-    st.subheader("Omzetverdeling")
-    split = df.groupby("type")["amount_untaxed"].sum().reset_index()
-    fig_donut = px.pie(
-        split, values="amount_untaxed", names="type", hole=0.5,
-        color="type",
-        color_discrete_map={"Nieuwe klant": "#2ecc71", "Bestaande klant": "#3498db"},
-    )
-    fig_donut.update_traces(textinfo="percent+value", texttemplate="%{percent}<br>€ %{value:,.0f}")
-    fig_donut.update_layout(margin=dict(t=20, b=20))
-    st.plotly_chart(fig_donut, use_container_width=True)
+maand_nieuw = (
+    df[df["type"] == "Nieuwe klant"]
+    .groupby("maand")["klant_id"]
+    .nunique()
+    .reset_index()
+)
+maand_nieuw["maand"] = maand_nieuw["maand"].astype(str)
+maand_nieuw.columns = ["Maand", "Nieuwe klanten"]
 
-# --- Maandelijkse trend ---
-with col2:
-    st.subheader("Trend per maand")
-    df["maand"] = df["date_order"].dt.to_period("M").astype(str)
-    maand = df.groupby(["maand", "type"])["amount_untaxed"].sum().reset_index()
-    fig_bar = px.bar(
-        maand, x="maand", y="amount_untaxed", color="type", barmode="stack",
-        labels={"amount_untaxed": "Omzet (€)", "maand": "Maand", "type": ""},
-        color_discrete_map={"Nieuwe klant": "#2ecc71", "Bestaande klant": "#3498db"},
-    )
-    fig_bar.update_layout(margin=dict(t=20, b=20))
-    st.plotly_chart(fig_bar, use_container_width=True)
+fig_klanten = px.bar(
+    maand_nieuw, x="Maand", y="Nieuwe klanten",
+    labels={"Nieuwe klanten": "Aantal nieuwe klanten"},
+    color_discrete_sequence=["#2ecc71"],
+    text="Nieuwe klanten",
+)
+fig_klanten.update_traces(textposition="outside")
+fig_klanten.update_layout(margin=dict(t=20, b=20))
+st.plotly_chart(fig_klanten, use_container_width=True)
 
 st.divider()
 
-# --- Tabel nieuwe klanten ---
-st.subheader("Nieuwe klanten in deze periode")
-if nieuw.empty:
-    st.info("Geen nieuwe klanten in deze periode.")
-else:
-    tabel_nieuw = (
-        nieuw.groupby(["klant_id", "klant"])
+# --- Omzet nieuw vs bestaand per maand ---
+st.subheader("Omzet nieuwe vs bestaande klanten per maand")
+
+maand_omzet = (
+    df.groupby([df["maand"].astype(str), "type"])["amount_untaxed"]
+    .sum()
+    .reset_index()
+)
+maand_omzet.columns = ["Maand", "Type", "Omzet"]
+
+fig_omzet = px.bar(
+    maand_omzet, x="Maand", y="Omzet", color="Type", barmode="stack",
+    labels={"Omzet": "Omzet excl. BTW (€)", "Type": ""},
+    color_discrete_map={"Nieuwe klant": "#2ecc71", "Bestaande klant": "#3498db"},
+)
+fig_omzet.update_layout(margin=dict(t=20, b=20))
+st.plotly_chart(fig_omzet, use_container_width=True)
+
+st.divider()
+
+# --- Tabel: nieuwe klanten per maand ---
+st.subheader("Welke klanten waren nieuw per maand?")
+
+maanden = sorted(df[df["type"] == "Nieuwe klant"]["maand"].unique(), reverse=True)
+geselecteerde_maand = st.selectbox(
+    "Selecteer maand",
+    options=[str(m) for m in maanden],
+)
+
+if geselecteerde_maand:
+    df_maand = df[
+        (df["type"] == "Nieuwe klant") &
+        (df["maand"].astype(str) == geselecteerde_maand)
+    ]
+    tabel = (
+        df_maand.groupby(["klant_id", "klant"])
         .agg(omzet=("amount_untaxed", "sum"), orders=("amount_untaxed", "count"))
         .reset_index()
         .sort_values("omzet", ascending=False)
         .drop(columns="klant_id")
     )
-    tabel_nieuw.columns = ["Klant", "Omzet (€)", "Aantal orders"]
+    tabel.columns = ["Klant", "Omzet excl. BTW (€)", "Aantal orders"]
     st.dataframe(
-        tabel_nieuw,
+        tabel,
         use_container_width=True,
         hide_index=True,
-        column_config={"Omzet (€)": st.column_config.NumberColumn(format="€ %.0f")},
+        column_config={"Omzet excl. BTW (€)": st.column_config.NumberColumn(format="€ %.0f")},
     )
