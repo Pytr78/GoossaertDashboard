@@ -8,6 +8,8 @@ from odoo_client import OdooClient
 
 st.set_page_config(page_title="Marges per product", page_icon="💰", layout="wide")
 st.title("💰 Marges per product")
+st.warning("🚧 Deze pagina is momenteel in opbouw en nog niet volledig.", icon="🚧")
+st.stop()
 
 @st.cache_resource
 def get_client():
